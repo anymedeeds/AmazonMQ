@@ -1,0 +1,7 @@
+amq_instances:
+  - name: amq1
+    host: "amq1.example.com"
+    secret_name: "amq1-secrets"
+  - name: amq2
+    host: "amq2.example.com"
+    secret_name: "amq2-secrets"
