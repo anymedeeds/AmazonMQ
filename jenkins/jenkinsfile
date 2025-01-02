@@ -1,0 +1,55 @@
+pipeline {
+    agent any
+
+    triggers {
+        cron('H 0 * * 0') // Run weekly on Sunday at midnight
+    }
+
+    environment {
+        BACKUP_SCRIPT = './BackupRestore/AmazonMQ/scripts/amq_backup.sh' // Path to the backup script
+        CONFIG_DIR = './BackupRestore/AmazonMQ/config'                  // Path to the configuration files
+        BACKUP_DIR = './backups'                                       // Backup storage directory
+        REGION = 'us-east-1'                                           // AWS region
+    }
+
+    stages {
+        stage('Checkout Repository') {
+            steps {
+                checkout scm // Pull the latest code from the Git repository
+            }
+        }
+
+        stage('Process Config Files') {
+            steps {
+                script {
+                    def environments = ['qa', 'stage', 'prod']
+                    environments.each { env ->
+                        def configFile = "${CONFIG_DIR}/${env}.yaml"
+                        
+                        // Check if the config file exists
+                        if (!fileExists(configFile)) {
+                            error "Configuration file ${configFile} does not exist!"
+                        }
+
+                        // Read AMQ names from the YAML file
+                        def amqNames = readYaml file: configFile
+                        amqNames.each { amq ->
+                            echo "Processing backup for AMQ: ${amq}"
+                            
+                            // Run backup for each AMQ
+                            sh """
+                            ${BACKUP_SCRIPT} ${amq} ${env} ${REGION} ${BACKUP_DIR}/${env}/${amq}
+                            """
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            archiveArtifacts artifacts: 'backups/**', allowEmptyArchive: true // Archive backups for review
+        }
+    }
+}
