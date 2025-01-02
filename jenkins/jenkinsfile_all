@@ -1,0 +1,51 @@
+pipeline {
+    agent any
+
+    parameters {
+        string(name: 'ENVIRONMENT', defaultValue: 'all', description: 'Specify environment (qa, stage, prod, or all)')
+    }
+
+    stages {
+        stage('Checkout Repository') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Process Config Files') {
+            steps {
+                script {
+                    def environments = []
+                    if (params.ENVIRONMENT == 'all') {
+                        environments = ['qa', 'stage', 'prod']
+                    } else {
+                        environments = [params.ENVIRONMENT]
+                    }
+
+                    environments.each { env ->
+                        def configFile = "${CONFIG_DIR}/${env}.yaml"
+                        
+                        if (!fileExists(configFile)) {
+                            error "Configuration file ${configFile} does not exist!"
+                        }
+
+                        def configData = readYaml file: configFile
+                        echo "Processing ${env} environment with config file: ${configFile}"
+
+                        configData.amq_instances.each { instance ->
+                            sh """
+                            ${BACKUP_SCRIPT} ${instance.name} ${instance.host} ${instance.secret_name} ${env} ${REGION} ${BACKUP_DIR}/${env}/${instance.name}
+                            """
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            archiveArtifacts artifacts: 'backups/**', allowEmptyArchive: true
+        }
+    }
+}
