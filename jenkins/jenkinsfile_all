@@ -1,8 +1,13 @@
 pipeline {
     agent any
 
-    parameters {
-        string(name: 'ENVIRONMENT', defaultValue: 'all', description: 'Specify environment (qa, stage, prod, or all)')
+    environment {
+        BACKUP_SCRIPT = './BackupRestore/AmazonMQ/scripts/amq_backup.sh'
+        CONFIG_DIR = './BackupRestore/AmazonMQ/config'
+        BACKUP_DIR = './backups'
+        REGION = 'us-east-1'
+        S3_BUCKET = 'your-s3-bucket-name'
+        S3_BACKUP_PATH = 'amq-backups'
     }
 
     stages {
@@ -12,30 +17,49 @@ pipeline {
             }
         }
 
-        stage('Process Config Files') {
+        stage('Process Backups Based on YAML Schedule') {
             steps {
                 script {
-                    def environments = []
-                    if (params.ENVIRONMENT == 'all') {
-                        environments = ['qa', 'stage', 'prod']
-                    } else {
-                        environments = [params.ENVIRONMENT]
-                    }
-
+                    // Iterate through all environment YAML files
+                    def environments = ['qa', 'stage', 'prod']
                     environments.each { env ->
                         def configFile = "${CONFIG_DIR}/${env}.yaml"
-                        
                         if (!fileExists(configFile)) {
                             error "Configuration file ${configFile} does not exist!"
                         }
 
+                        // Parse the YAML file
                         def configData = readYaml file: configFile
-                        echo "Processing ${env} environment with config file: ${configFile}"
+                        def today = new Date().format("EEEE").toLowerCase() // e.g., "monday", "sunday"
 
                         configData.amq_instances.each { instance ->
-                            sh """
-                            ${BACKUP_SCRIPT} ${instance.name} ${instance.host} ${instance.secret_name} ${env} ${REGION} ${BACKUP_DIR}/${env}/${instance.name}
-                            """
+                            // Match today's schedule with the instance's schedule
+                            def instanceSchedule = instance.schedule.toLowerCase()
+                            def shouldRun = false
+
+                            if (instanceSchedule == 'daily') {
+                                shouldRun = true
+                            } else if (instanceSchedule == 'weekly' && today == 'sunday') {
+                                shouldRun = true
+                            } else if (instanceSchedule == 'monthly' && new Date().format("d") == '1') {
+                                shouldRun = true
+                            }
+
+                            if (shouldRun) {
+                                echo "Running backup for ${instance.name} (${instance.host}) as per schedule: ${instanceSchedule}"
+
+                                // Run the backup script
+                                sh """
+                                ${BACKUP_SCRIPT} ${instance.name} ${instance.host} ${instance.secret_name} ${env} ${REGION} ${BACKUP_DIR}/${env}/${instance.name}
+                                """
+
+                                // Upload the backup to S3
+                                sh """
+                                aws s3 cp ${BACKUP_DIR}/${env}/${instance.name}/ s3://${S3_BUCKET}/${S3_BACKUP_PATH}/${env}/${instance.name}/ --recursive
+                                """
+                            } else {
+                                echo "Skipping backup for ${instance.name} (${instance.host}). Schedule: ${instanceSchedule}, Today: ${today}"
+                            }
                         }
                     }
                 }
@@ -46,6 +70,12 @@ pipeline {
     post {
         always {
             archiveArtifacts artifacts: 'backups/**', allowEmptyArchive: true
+        }
+        success {
+            echo "Backup process completed successfully."
+        }
+        failure {
+            echo "Backup process failed. Please check the logs."
         }
     }
 }
